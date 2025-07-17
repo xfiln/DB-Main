@@ -1,0 +1,114 @@
+const fs = require("fs");
+const fetch = require("node-fetch");
+const { sticker5 } = require("../lib/sticker");
+const { v4: uuidv4 } = require("uuid");
+
+global.bratPending = global.bratPending || {};
+
+function generateBratId(length = 4) {
+  return uuidv4().replace(/-/g, '').substring(0, length);
+}
+
+function extractBratId(text) {
+  const match = text?.match(/\[BRAT_ID:(.*?)\]/);
+  return match ? match[1] : null;
+}
+
+let handler = async (m, { conn, text, usedPrefix, command }) => {
+  try {
+    if (!text) throw `Gunakan format:\n${usedPrefix + command} lagi ruwet`;
+
+    const bratId = generateBratId();
+    global.bratPending[bratId] = {
+      prompt: text,
+      chatId: m.chat,
+      userId: m.sender,
+      usageCount: 0, // untuk hitung berapa kali dibalas
+      timestamp: Date.now()
+    };
+
+    await conn.reply(m.chat, `
+📝 *text:* ${text}
+
+Pilih jenis stiker yang ingin dibuat:
+*1*. Sticker Image 🖼️
+*2*. Sticker Video 🎞️
+
+Balas pesan ini dengan angka atau teks (*1/2* atau *image/video*).
+
+[BRAT_ID:${bratId}]`, m);
+
+    cleanupOldBrat();
+
+  } catch (e) {
+    console.error("Handler error:", e);
+    await conn.reply(m.chat, `❌ Error: ${e}`, m);
+  }
+};
+
+handler.before = async (m, { conn }) => {
+  try {
+    const text = m.text?.trim().toLowerCase();
+    const quotedText = m.quoted?.text || m.quoted?.caption || "";
+    const bratId = extractBratId(quotedText);
+    if (!bratId) return;
+
+    const session = global.bratPending[bratId];
+    if (!session || session.userId !== m.sender) return;
+
+    // Batas hanya 2 kali balasan per session
+    session.usageCount = session.usageCount || 0;
+    if (session.usageCount >= 2) {
+  return conn.reply(m.chat, `⚠️ Kamu sudah membalas maksimal 2 kali untuk sesi ini. Jalankan .brat lagi jika ingin membuat stiker baru.`, m);
+}
+    session.usageCount += 1;
+
+    const { prompt, chatId } = session;
+
+    if (text === '1' || text === 'gambar' || text.includes('image')) {
+      await conn.reply(chatId, `⏳ Membuat stiker Brat...`, m);
+
+      const url = `https://api.betabotz.eu.org/api/maker/brat?text=${encodeURIComponent(prompt)}&apikey=${lann}`;
+      const res = await fetch(url);
+      const buffer = await res.buffer();
+
+      const sticker = await sticker5(buffer, null, global.packname, global.author, ['🎨']);
+      if (!sticker) throw '❌ Gagal membuat stiker brat!';
+
+      await conn.sendFile(chatId, sticker, 'brat.webp', '', m);
+
+    } else if (text === '2' || text === 'video') {
+      await conn.reply(chatId, `⏳ Membuat stiker Brat Video...`, m);
+
+      const url = `https://api.betabotz.eu.org/api/maker/brat-video?text=${encodeURIComponent(prompt)}&apikey=${lann}`;
+      await conn.sendVideoAsSticker(chatId, url, m, {
+        packname: global.packname,
+        author: global.author
+      });
+
+    } else {
+      await conn.reply(chatId, `❌ Pilihan tidak valid. Gunakan angka 1/2 atau image/video`, m);
+    }
+
+  } catch (err) {
+    console.error("Before handler error:", err);
+    conn.reply(m.chat, "❌ Gagal memproses pilihan stiker!", m);
+  }
+};
+
+function cleanupOldBrat() {
+  const now = Date.now();
+  const maxAge = 10 * 60 * 1000; // 10 menit
+  for (let key in global.bratPending) {
+    if (now - global.bratPending[key].timestamp > maxAge) {
+      delete global.bratPending[key];
+    }
+  }
+}
+setInterval(cleanupOldBrat, 5 * 60 * 1000);
+
+handler.command = handler.help = ['brat'];
+handler.tags = ['sticker'];
+handler.limit = true;
+
+module.exports = handler;
